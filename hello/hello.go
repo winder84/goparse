@@ -16,20 +16,12 @@ type Product struct {
     Params map[string]string
     Attributes map[string]string
     Properties map[string]string
-    //SiteId string
-    //Version int
 }
 
 type Category struct {
     Name string
     ExternalId string
     ParentId string
-    //SiteId string
-    //Version int
-}
-
-type Vendor struct {
-    Name string
     //SiteId string
     //Version int
 }
