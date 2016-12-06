@@ -10,7 +10,8 @@ import (
     "strconv"
     "database/sql"
     "log"
-    "net/http"
+    "strings"
+    "encoding/json"
 )
 
 type Product struct {
@@ -32,10 +33,10 @@ var siteXmlParseUrl string
 var db *sql.DB
 var timeBefore time.Time
 var err error
-var tx *sql.Tx
 var newVendorsCount int
 var newProductParamCount int
 var newProductParamValueCount int
+var ProductsCount int
 const createdFormat = "2006-01-02 15:04:05"
 var approvedParamsList []string
 func main() {
@@ -66,7 +67,6 @@ func main() {
         "Размер изделия на модели",
         "Цвет и обтяжка каблука",
         "Высота каблука",
-        "Особенности",
         "Страна дизайна и производства",
         "Размеры",
         "Вес",
@@ -93,24 +93,24 @@ func main() {
             os.Exit(1)
         }
 
-        timeLine("Скачивание xml начато")
-        newFile, err := os.Create(tmpFileName)
-        if err != nil {
-            log.Fatal(err)
-        }
-        defer newFile.Close()
-        httpFile, err := http.Get(siteXmlParseUrl)
-        if err != nil {
-            fmt.Println(err)
-            os.Exit(1)
-        }
-        numBytesWritten, err := io.Copy(newFile, httpFile.Body)
-        if err != nil {
-            log.Fatal(err)
-        }
-        timeLine("Размер файла " + strconv.FormatInt(numBytesWritten/1000000, 10) + " MB")
-        httpFile.Body.Close()
-        timeLine("Скачивание xml завершено")
+        //timeLine("Скачивание xml начато")
+        //newFile, err := os.Create(tmpFileName)
+        //if err != nil {
+        //    log.Fatal(err)
+        //}
+        //defer newFile.Close()
+        //httpFile, err := http.Get(siteXmlParseUrl)
+        //if err != nil {
+        //    fmt.Println(err)
+        //    os.Exit(1)
+        //}
+        //numBytesWritten, err := io.Copy(newFile, httpFile.Body)
+        //if err != nil {
+        //    log.Fatal(err)
+        //}
+        //timeLine("Размер файла " + strconv.FormatInt(numBytesWritten/1000000, 10) + " MB")
+        //httpFile.Body.Close()
+        //timeLine("Скачивание xml завершено")
         file, err := os.Open(tmpFileName)
         if err != nil {
             fmt.Println(err.Error())
@@ -138,6 +138,7 @@ func main() {
 
 func ImportSite(reader io.Reader) (int, int, error) {
     d := xml.NewDecoder(reader)
+    ProductsCount = 1;
     var (
         isProduct bool
         isCategory bool
@@ -147,10 +148,10 @@ func ImportSite(reader io.Reader) (int, int, error) {
         categoryExternalId string
         categoryParentId string
     )
+    Products := []Product{}
     Params := make(map[string]string)
     Attributes := make(map[string]string)
     Properties := make(map[string]string)
-    ProductsCount := 0
     CategoriesCount := 0
     for {
         t, tokenErr := d.Token()
@@ -208,7 +209,13 @@ func ImportSite(reader io.Reader) (int, int, error) {
         case xml.EndElement:
             if t.Name.Local == "offer" {
                 ProductsCount++
-                checkAndSaveProduct(Product{Params, Attributes, Properties})
+                product := Product{Params, Attributes, Properties}
+                Products = append(Products, product)
+                if ProductsCount % 10000 == 0 {
+                    productsPartImport(Products)
+                    Products = Products[:0]
+                    timeLine("Обработано товаров: " + strconv.Itoa(ProductsCount))
+                }
                 if isProduct {
                     isProduct = false;
                 }
@@ -232,10 +239,6 @@ func ImportSite(reader io.Reader) (int, int, error) {
 func checkAndSaveProduct(Product Product) {
     var vendorId int64
     var productId int64
-    tx, err = db.Begin()
-    if err != nil {
-        log.Fatal(err)
-    }
     oldProducts, err := db.Query("SELECT id FROM Product WHERE externalId=? AND siteId=?", Product.Attributes["id"], siteId)
     checkErrorAndRollback(err)
     for oldProducts.Next() {
@@ -265,6 +268,9 @@ func checkAndSaveProduct(Product Product) {
     }
     //---------------------------------------- Product
     if productId > 0 {
+        if Product.Properties["oldprice"] == "" {
+            Product.Properties["oldprice"] = "0"
+        }
         newProductResults, err := db.Exec("UPDATE Product SET " +
                 "version=?, currencyId=?, description=?, model=?, name=?, price=?, oldPrice=?, " +
                 "typePrefix=?, pictures=?, url=?, updated=?, vendorCode=? " +
@@ -311,6 +317,28 @@ func checkAndSaveProduct(Product Product) {
     }
     //------------------------------------------------ ProductParams
     for productParamKey, productParamValue := range Product.Params {
+        if len(productParamValue) > 250 {
+            productParamValue = productParamValue[0:250]
+            lastIndex := strings.LastIndex(productParamValue, ", ")
+            if lastIndex == -1 {
+                lastIndex = strings.LastIndex(productParamValue, "; ")
+            }
+            if lastIndex == -1 {
+                lastIndex = strings.LastIndex(productParamValue, "<br>")
+            }
+            if lastIndex == -1 {
+                lastIndex = strings.LastIndex(productParamValue, ". ")
+            }
+            if lastIndex == -1 {
+                lastIndex = strings.LastIndex(productParamValue, "· ")
+            }
+            if lastIndex == -1 {
+                lastIndex = 250
+            }
+            //fmt.Println(productParamValue)
+            //fmt.Println(lastIndex)
+            productParamValue = productParamValue[0:lastIndex]
+        }
         if stringInSlice(productParamKey, approvedParamsList) {
             var dbProductParamId int64
             var dbProductParamValueId int64
@@ -358,7 +386,22 @@ func checkAndSaveProduct(Product Product) {
             }
         }
     }
-    tx.Commit()
+}
+
+func productsPartImport(Products []Product)  {
+    for _, Product := range Products {
+        pictures := []string{}
+        jj := 1
+        for _, pVal := range strings.Split(Product.Properties["picture"], ",") {
+            pVal := string(pVal)
+            pictures = append(pictures, pVal)
+            jj++
+        }
+        pics, err := json.Marshal(pictures)
+        checkErrorAndRollback(err)
+        Product.Properties["picture"] = string(pics)
+        checkAndSaveProduct(Product)
+    }
 }
 
 func checkAndSaveCategories(Category Category)  {
@@ -403,7 +446,6 @@ func stringInSlice(a string, list []string) bool {
 
 func checkErrorAndRollback(err error) {
     if err != nil && err.Error() != "sql: no rows in result set" {
-        tx.Rollback()
         timeLine("Транзакция отменена")
         panic(err.Error())
     }
