@@ -391,17 +391,21 @@ func checkAndSaveProduct(Product Product) {
 
 func productsPartImport(Products []Product)  {
     for _, Product := range Products {
-        pictures := []string{}
-        jj := 1
-        for _, pVal := range strings.Split(Product.Properties["picture"], ",") {
-            pVal := string(pVal)
-            pictures = append(pictures, pVal)
-            jj++
-        }
-        pics, err := json.Marshal(pictures)
+        pPrice, err := strconv.ParseInt(Product.Properties["price"], 10, 64)
         checkErrorAndRollback(err)
-        Product.Properties["picture"] = string(pics)
-        checkAndSaveProduct(Product)
+        if pPrice > 2000 {
+            pictures := []string{}
+            jj := 1
+            for _, pVal := range strings.Split(Product.Properties["picture"], ",") {
+                pVal := string(pVal)
+                pictures = append(pictures, pVal)
+                jj++
+            }
+            pics, err := json.Marshal(pictures)
+            checkErrorAndRollback(err)
+            Product.Properties["picture"] = string(pics)
+            checkAndSaveProduct(Product)
+        }
     }
 }
 
