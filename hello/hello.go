@@ -12,6 +12,7 @@ import (
     "log"
     "strings"
     "encoding/json"
+    "net/http"
 )
 
 type Product struct {
@@ -93,24 +94,24 @@ func main() {
             os.Exit(1)
         }
 
-        //timeLine("Скачивание xml начато")
-        //newFile, err := os.Create(tmpFileName)
-        //if err != nil {
-        //    log.Fatal(err)
-        //}
-        //defer newFile.Close()
-        //httpFile, err := http.Get(siteXmlParseUrl)
-        //if err != nil {
-        //    fmt.Println(err)
-        //    os.Exit(1)
-        //}
-        //numBytesWritten, err := io.Copy(newFile, httpFile.Body)
-        //if err != nil {
-        //    log.Fatal(err)
-        //}
-        //timeLine("Размер файла " + strconv.FormatInt(numBytesWritten/1000000, 10) + " MB")
-        //httpFile.Body.Close()
-        //timeLine("Скачивание xml завершено")
+        timeLine("Скачивание xml начато")
+        newFile, err := os.Create(tmpFileName)
+        if err != nil {
+            log.Fatal(err)
+        }
+        defer newFile.Close()
+        httpFile, err := http.Get(siteXmlParseUrl)
+        if err != nil {
+            fmt.Println(err)
+            os.Exit(1)
+        }
+        numBytesWritten, err := io.Copy(newFile, httpFile.Body)
+        if err != nil {
+            log.Fatal(err)
+        }
+        timeLine("Размер файла " + strconv.FormatInt(numBytesWritten/1000000, 10) + " MB")
+        httpFile.Body.Close()
+        timeLine("Скачивание xml завершено")
         file, err := os.Open(tmpFileName)
         if err != nil {
             fmt.Println(err.Error())
