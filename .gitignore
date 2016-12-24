@@ -37,6 +37,6 @@ vendor/
 *.uxp
 *.uxt
 
-/hello/.idea/
-/hello/test.xml
-/hello/tmpFile.xml
+/raim/.idea/
+/raim/test.xml
+/raim/tmpFile.xml

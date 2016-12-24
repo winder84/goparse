@@ -12,7 +12,6 @@ import (
     "log"
     "strings"
     "encoding/json"
-    "net/http"
 )
 
 type Product struct {
@@ -40,7 +39,8 @@ var newProductParamValueCount int
 var ProductsCount int
 const createdFormat = "2006-01-02 15:04:05"
 var approvedParamsList []string
-var productSlice []Product
+var scriptCount = 1
+//var productSlice []Product
 func main() {
     db, err = sql.Open("mysql", "root:07090530@/raiment-shop.ru")
     defer db.Close()
@@ -57,20 +57,20 @@ func main() {
         "Размер",
         "Артикул",
         "Материал стельки",
-        "Тэг",
+        //"Тэг",
         "Страна дизайна",
         "Сезон",
         "Упаковка",
         "Материал",
         "Уход за изделием",
-        "Параметры изделия",
+        //"Параметры изделия",
         "Материал подошвы",
         "Параметры модели",
         "Размер изделия на модели",
         "Цвет и обтяжка каблука",
         "Высота каблука",
         "Страна дизайна и производства",
-        "Размеры",
+        //"Размеры",
         "Вес",
         "Высота голенища",
     }
@@ -83,6 +83,8 @@ func main() {
         fmt.Println(err)
         os.Exit(1)
     }
+    productChan := make(chan Product, 30000)
+    go productParamsImport(productChan)
     for sites.Next() {
         newProductParamCount = 0
         newProductParamValueCount = 0
@@ -95,24 +97,24 @@ func main() {
             os.Exit(1)
         }
 
-        timeLine("Скачивание xml начато")
-        newFile, err := os.Create(tmpFileName)
-        if err != nil {
-            log.Fatal(err)
-        }
-        defer newFile.Close()
-        httpFile, err := http.Get(siteXmlParseUrl)
-        if err != nil {
-            fmt.Println(err)
-            os.Exit(1)
-        }
-        numBytesWritten, err := io.Copy(newFile, httpFile.Body)
-        if err != nil {
-            log.Fatal(err)
-        }
-        timeLine("Размер файла " + strconv.FormatInt(numBytesWritten/1000000, 10) + " MB")
-        httpFile.Body.Close()
-        timeLine("Скачивание xml завершено")
+        //timeLine("Скачивание xml начато")
+        //newFile, err := os.Create(tmpFileName)
+        //if err != nil {
+        //    log.Fatal(err)
+        //}
+        //defer newFile.Close()
+        //httpFile, err := http.Get(siteXmlParseUrl)
+        //if err != nil {
+        //    fmt.Println(err)
+        //    os.Exit(1)
+        //}
+        //numBytesWritten, err := io.Copy(newFile, httpFile.Body)
+        //if err != nil {
+        //    log.Fatal(err)
+        //}
+        //timeLine("Размер файла " + strconv.FormatInt(numBytesWritten/1000000, 10) + " MB")
+        //httpFile.Body.Close()
+        //timeLine("Скачивание xml завершено")
         file, err := os.Open(tmpFileName)
         if err != nil {
             fmt.Println(err.Error())
@@ -121,8 +123,7 @@ func main() {
 
         timeLine("Импорт магазина " + siteTitle + " начат")
         newVendorsCount = 0
-        go productParamsImport()
-        ProductsCount, CategoriesCount, err := ImportSite(file)
+        ProductsCount, CategoriesCount, err := ImportSite(file, productChan)
         timeLine("Импорт магазина " + siteTitle + " завершен")
         timeLine("Обработано товаров: " + strconv.Itoa(ProductsCount))
         timeLine("Обработано категорий: " + strconv.Itoa(CategoriesCount))
@@ -134,12 +135,15 @@ func main() {
             os.Exit(1)
         }
         file.Close()
+        updateVendorResults, err := db.Exec("UPDATE Site SET version=? WHERE id=?", siteVersion, siteId)
+        checkErrorAndRollback(err)
+        updateVendorResults.LastInsertId()
     }
     timeLine("Импорт магазинов завершен")
 }
 
 
-func ImportSite(reader io.Reader) (int, int, error) {
+func ImportSite(reader io.Reader, productChan chan Product) (int, int, error) {
     d := xml.NewDecoder(reader)
     ProductsCount = 1;
     var (
@@ -155,16 +159,20 @@ func ImportSite(reader io.Reader) (int, int, error) {
     Params := make(map[string]string)
     Attributes := make(map[string]string)
     Properties := make(map[string]string)
+    pictures := []string{}
     CategoriesCount := 0
     for {
         t, tokenErr := d.Token()
         if tokenErr != nil {
-            break
+            if len(productChan) == 0 {
+                break
+            }
         }
         switch t := t.(type) {
         case xml.StartElement:
             if t.Name.Local == "offer" {
                 isProduct = true
+                pictures = []string{}
                 for _, value := range t.Attr {
                     Attributes[string(value.Name.Local)] = value.Value
                 }
@@ -198,8 +206,8 @@ func ImportSite(reader io.Reader) (int, int, error) {
                     newParam = ""
                 }
                 if newProp != "" {
-                    if newProp == "picture" && len(Properties[newProp]) > 0 {
-                        Properties[newProp] = Properties[newProp] + "," + string(t.Copy())
+                    if newProp == "picture" {
+                        pictures = append(pictures, string(t.Copy()))
                     } else {
                         Properties[newProp] = string(t.Copy())
                     }
@@ -211,17 +219,16 @@ func ImportSite(reader io.Reader) (int, int, error) {
             }
         case xml.EndElement:
             if t.Name.Local == "offer" {
-                ProductsCount++
-                product := Product{Params, Attributes, Properties}
-                Products = append(Products, product)
-                if ProductsCount % 10000 == 0 {
-                    productsPartImport(Products)
-                    Products = Products[:0]
-                    timeLine("Обработано товаров: " + strconv.Itoa(ProductsCount))
-                }
                 if isProduct {
+                    pics, err := json.Marshal(pictures)
+                    checkErrorAndRollback(err)
+                    Properties["picture"] = string(pics)
                     isProduct = false;
                 }
+                ProductsCount++
+                product := Product{Params, Attributes, Properties}
+                checkAndSaveProduct(product, productChan)
+                Products = Products[:0]
                 Params = make(map[string]string)
                 Attributes = make(map[string]string)
                 Properties = make(map[string]string)
@@ -239,7 +246,7 @@ func ImportSite(reader io.Reader) (int, int, error) {
     return ProductsCount, CategoriesCount, nil
 }
 
-func checkAndSaveProduct(Product Product) {
+func checkAndSaveProduct(Product Product, productChan chan<- Product) {
     var vendorId int64
     var productId int64
     oldProducts, err := db.Query("SELECT id FROM Product WHERE externalId=? AND siteId=?", Product.Attributes["id"], siteId)
@@ -329,111 +336,99 @@ func checkAndSaveProduct(Product Product) {
         checkErrorAndRollback(err)
     }
     Product.Properties["newId"] = strconv.FormatInt(productId, 10)
-    productSlice = append(productSlice, Product)
+    productChan <- Product
 }
 
-func productsPartImport(Products []Product)  {
-    for _, Product := range Products {
-        pictures := []string{}
-        jj := 1
-        for _, pVal := range strings.Split(Product.Properties["picture"], ",") {
-            pVal := string(pVal)
-            pictures = append(pictures, pVal)
-            jj++
-        }
-        pics, err := json.Marshal(pictures)
-        checkErrorAndRollback(err)
-        Product.Properties["picture"] = string(pics)
-        checkAndSaveProduct(Product)
-    }
-}
-
-func productParamsImport () {
+func productParamsImport (productChan <- chan Product) {
     //------------------------------------------------ ProductParams
-    for {
-        fmt.Printf("\r", "-")
-        for productIndex, Product := range productSlice {
-            for productParamKey, productParamValue := range Product.Params {
-                if productParamKey == "Страна производства" {
-                    var firstIndex = strings.Index(productParamValue, "<")
-                    if firstIndex != -1 {
-                        productParamValue = productParamValue[0:firstIndex]
-                    }
-                }
-                if productParamKey == "Страна дизайна" {
-                    var firstIndex = strings.Index(productParamValue, "<")
-                    if firstIndex != -1 {
-                        productParamValue = productParamValue[0:firstIndex]
-                    }
-                }
-                if len(productParamValue) > 250 {
-                    productParamValue = productParamValue[0:250]
-                    lastIndex := strings.LastIndex(productParamValue, ", ")
-                    if lastIndex == -1 {
-                        lastIndex = strings.LastIndex(productParamValue, "; ")
-                    }
-                    if lastIndex == -1 {
-                        lastIndex = strings.LastIndex(productParamValue, "<br>")
-                    }
-                    if lastIndex == -1 {
-                        lastIndex = strings.LastIndex(productParamValue, ". ")
-                    }
-                    if lastIndex == -1 {
-                        lastIndex = strings.LastIndex(productParamValue, "· ")
-                    }
-                    if lastIndex == -1 {
-                        lastIndex = 250
-                    }
-                    productParamValue = productParamValue[0:lastIndex]
-                }
-                if stringInSlice(productParamKey, approvedParamsList) {
-                    var dbProductParamId int64
-                    var dbProductParamValueId int64
-                    var productPropertyValueId int64
-                    dbProductParam, err := db.Query("SELECT id FROM ProductProperty WHERE name=?", productParamKey)
-                    checkErrorAndRollback(err)
-                    for dbProductParam.Next() {
-                        err = dbProductParam.Scan(&dbProductParamId)
-                        checkErrorAndRollback(err)
-                    }
-                    dbProductParam.Close()
-                    if dbProductParamId <= 0 {
-                        newProductParamResults, err := db.Exec("INSERT INTO ProductProperty (name) VALUES(?)", productParamKey)
-                        checkErrorAndRollback(err)
-                        dbProductParamId, err = newProductParamResults.LastInsertId()
-                        checkErrorAndRollback(err)
-                        newProductParamCount++
-                    }
-                    dbProductParamValue, err := db.Query("SELECT id FROM ProductPropertyValue WHERE value=? AND productPropertyId=?", productParamValue, strconv.FormatInt(dbProductParamId, 10))
-                    checkErrorAndRollback(err)
-                    for dbProductParamValue.Next() {
-                        err = dbProductParamValue.Scan(&dbProductParamValueId)
-                        checkErrorAndRollback(err)
-                    }
-                    dbProductParamValue.Close()
-
-                    if dbProductParamValueId <= 0 {
-                        newProductParamValueResults, err := db.Exec("INSERT INTO ProductPropertyValue (value, productPropertyId) VALUES(?, ?)", productParamValue, strconv.FormatInt(dbProductParamId, 10))
-                        checkErrorAndRollback(err)
-                        dbProductParamValueId, err = newProductParamValueResults.LastInsertId()
-                        checkErrorAndRollback(err)
-                        newProductParamValueCount++
-                    }
-                    dbProductParamValueLink, err := db.Query("SELECT productpropertyvalue_id FROM ProductPropertyValuesLink WHERE productpropertyvalue_id=? AND product_id=?", strconv.FormatInt(dbProductParamValueId, 10), Product.Properties["newId"])
-                    checkErrorAndRollback(err)
-                    for dbProductParamValueLink.Next() {
-                        err = dbProductParamValueLink.Scan(&productPropertyValueId)
-                        checkErrorAndRollback(err)
-                    }
-                    dbProductParamValueLink.Close()
-                    if productPropertyValueId <= 0 {
-                        newProductParamValueLinkResults, err := db.Exec("INSERT INTO ProductPropertyValuesLink (productpropertyvalue_id, product_id) VALUES(?, ?)", strconv.FormatInt(dbProductParamValueId, 10), Product.Properties["newId"])
-                        checkErrorAndRollback(err)
-                        newProductParamValueLinkResults.LastInsertId()
-                    }
+    for Product := range productChan {
+        for productParamKey, productParamValue := range Product.Params {
+            if productParamKey == "Страна производства" {
+                var firstIndex = strings.Index(productParamValue, "<")
+                if firstIndex != -1 {
+                    productParamValue = productParamValue[0:firstIndex]
                 }
             }
-            productSlice = append(productSlice[:productIndex], productSlice[productIndex+1:]...)
+            if productParamKey == "Страна дизайна" {
+                var firstIndex = strings.Index(productParamValue, "<")
+                if firstIndex != -1 {
+                    productParamValue = productParamValue[0:firstIndex]
+                }
+            }
+            if len(productParamValue) > 250 {
+                productParamValue = productParamValue[0:250]
+                lastIndex := strings.LastIndex(productParamValue, ", ")
+                if lastIndex == -1 {
+                    lastIndex = strings.LastIndex(productParamValue, "; ")
+                }
+                if lastIndex == -1 {
+                    lastIndex = strings.LastIndex(productParamValue, "<br>")
+                }
+                if lastIndex == -1 {
+                    lastIndex = strings.LastIndex(productParamValue, ". ")
+                }
+                if lastIndex == -1 {
+                    lastIndex = strings.LastIndex(productParamValue, "· ")
+                }
+                if lastIndex == -1 {
+                    lastIndex = 250
+                }
+                productParamValue = productParamValue[0:lastIndex]
+            }
+            if stringInSlice(productParamKey, approvedParamsList) {
+                var dbProductParamId int64
+                var dbProductParamValueId int64
+                var productPropertyValueId int64
+                dbProductParam, err := db.Query("SELECT id FROM ProductProperty WHERE name=?", productParamKey)
+                checkErrorAndRollback(err)
+                for dbProductParam.Next() {
+                    err = dbProductParam.Scan(&dbProductParamId)
+                    checkErrorAndRollback(err)
+                }
+                dbProductParam.Close()
+                if dbProductParamId <= 0 {
+                    newProductParamResults, err := db.Exec("INSERT INTO ProductProperty (name) VALUES(?)", productParamKey)
+                    checkErrorAndRollback(err)
+                    dbProductParamId, err = newProductParamResults.LastInsertId()
+                    checkErrorAndRollback(err)
+                    newProductParamCount++
+                }
+                dbProductParamValue, err := db.Query("SELECT id FROM ProductPropertyValue WHERE value=? AND productPropertyId=?", productParamValue, strconv.FormatInt(dbProductParamId, 10))
+                checkErrorAndRollback(err)
+                for dbProductParamValue.Next() {
+                    err = dbProductParamValue.Scan(&dbProductParamValueId)
+                    checkErrorAndRollback(err)
+                }
+                dbProductParamValue.Close()
+
+                if dbProductParamValueId <= 0 {
+                    newProductParamValueResults, err := db.Exec("INSERT INTO ProductPropertyValue (value, productPropertyId) VALUES(?, ?)", productParamValue, strconv.FormatInt(dbProductParamId, 10))
+                    checkErrorAndRollback(err)
+                    dbProductParamValueId, err = newProductParamValueResults.LastInsertId()
+                    checkErrorAndRollback(err)
+                    newProductParamValueCount++
+                }
+                dbProductParamValueLink, err := db.Query("SELECT productpropertyvalue_id FROM ProductPropertyValuesLink WHERE productpropertyvalue_id=? AND product_id=?", strconv.FormatInt(dbProductParamValueId, 10), Product.Properties["newId"])
+                checkErrorAndRollback(err)
+                for dbProductParamValueLink.Next() {
+                    err = dbProductParamValueLink.Scan(&productPropertyValueId)
+                    checkErrorAndRollback(err)
+                }
+                dbProductParamValueLink.Close()
+                if productPropertyValueId <= 0 {
+                    newProductParamValueLinkResults, err := db.Exec("INSERT INTO ProductPropertyValuesLink (productpropertyvalue_id, product_id) VALUES(?, ?)", strconv.FormatInt(dbProductParamValueId, 10), Product.Properties["newId"])
+                    checkErrorAndRollback(err)
+                    newProductParamValueLinkResults.LastInsertId()
+                }
+            }
+        }
+        if len(productChan) > 0 {
+            if (len(productChan) / 5000) + 3 >= scriptCount {
+                scriptCount++
+                go productParamsImport(productChan)
+            }
+            fmt.Printf("\r%s", "--- Значений в буфере: " + strconv.Itoa(len(productChan)) +
+                    " | Процессов: " + strconv.Itoa(scriptCount) + " | Товаров обработано: " + strconv.Itoa(ProductsCount) + " ---")
         }
     }
 }
@@ -459,7 +454,7 @@ func checkAndSaveCategories(Category Category)  {
 }
 func timeLine(message string) {
     timeEnd := time.Now()
-    fmt.Println("--- " + timeEnd.Format(createdFormat) + " ---")
+    fmt.Println("\n--- " + timeEnd.Format(createdFormat) + " ---")
     timeLine := timeEnd.Unix() - timeBefore.Unix()
     if timeLine > 0 {
         fmt.Println("--- " + strconv.FormatInt(timeLine, 10) + " сек ---")
@@ -479,7 +474,6 @@ func stringInSlice(a string, list []string) bool {
 
 func checkErrorAndRollback(err error) {
     if err != nil && err.Error() != "sql: no rows in result set" {
-        timeLine("Транзакция отменена")
         panic(err.Error())
     }
 }
