@@ -286,42 +286,38 @@ func checkAndSaveProduct(Product Product, productChan chan<- Product) {
         err = oldCategories.Scan(&categoryId)
         checkErrorAndRollback(err)
     }
-    if categoryId == 0 {
-        categoryIdToWrite = ""
-    } else {
-        categoryIdToWrite = strconv.FormatInt(categoryId, 10)
-    }
-    if productId > 0 {
-        if Product.Properties["oldprice"] == "" {
-            Product.Properties["oldprice"] = "0"
-        }
-        newProductResults, err := db.Exec("UPDATE Product SET " +
-                "version=?, currencyId=?, description=?, model=?, name=?, price=?, oldPrice=?, " +
-                "typePrefix=?, pictures=?, url=?, updated=?, vendorCode=?, categoryId=? " +
-                "WHERE id=?",
-            strconv.FormatFloat(siteVersion, 'f', -1, 64),
-            Product.Properties["currencyId"],
-            Product.Properties["description"],
-            Product.Properties["model"],
-            Product.Properties["name"],
-            Product.Properties["price"],
-            Product.Properties["oldprice"],
-            Product.Properties["typePrefix"],
-            Product.Properties["picture"],
-            Product.Properties["url"],
-            time.Now().Format(createdFormat),
-            Product.Properties["vendorCode"],
-            categoryIdToWrite,
-            productId)
-        checkErrorAndRollback(err)
-        newProductResults.LastInsertId()
-    } else {
-        if Product.Properties["oldprice"] == "" {
-            Product.Properties["oldprice"] = "0"
-        }
-        newProductResults, err := db.Exec("INSERT INTO Product (externalId, siteId, version, currencyId, description, model," +
-                " name, price, oldPrice, typePrefix, pictures, url, updated, vendorId, vendorCode, categoryId) " +
-                "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    if categoryId > 0 {
+        if productId > 0 {
+            if Product.Properties["oldprice"] == "" {
+                Product.Properties["oldprice"] = "0"
+            }
+            newProductResults, err := db.Exec("UPDATE Product SET " +
+                    "version=?, currencyId=?, description=?, model=?, name=?, price=?, oldPrice=?, " +
+                    "typePrefix=?, pictures=?, url=?, updated=?, vendorCode=?, categoryId=? " +
+                    "WHERE id=?",
+                strconv.FormatFloat(siteVersion, 'f', -1, 64),
+                Product.Properties["currencyId"],
+                Product.Properties["description"],
+                Product.Properties["model"],
+                Product.Properties["name"],
+                Product.Properties["price"],
+                Product.Properties["oldprice"],
+                Product.Properties["typePrefix"],
+                Product.Properties["picture"],
+                Product.Properties["url"],
+                time.Now().Format(createdFormat),
+                Product.Properties["vendorCode"],
+                categoryIdToWrite,
+                productId)
+            checkErrorAndRollback(err)
+            newProductResults.LastInsertId()
+        } else {
+            if Product.Properties["oldprice"] == "" {
+                Product.Properties["oldprice"] = "0"
+            }
+            newProductResults, err := db.Exec("INSERT INTO Product (externalId, siteId, version, currencyId, description, model," +
+                    " name, price, oldPrice, typePrefix, pictures, url, updated, vendorId, vendorCode, categoryId) " +
+                    "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 Product.Attributes["id"],
                 siteId,
                 strconv.FormatFloat(siteVersion, 'f', -1, 64),
@@ -338,12 +334,13 @@ func checkAndSaveProduct(Product Product, productChan chan<- Product) {
                 strconv.FormatInt(vendorId, 10),
                 Product.Properties["vendorCode"],
                 categoryIdToWrite)
-        checkErrorAndRollback(err)
-        productId, err = newProductResults.LastInsertId()
-        checkErrorAndRollback(err)
+            checkErrorAndRollback(err)
+            productId, err = newProductResults.LastInsertId()
+            checkErrorAndRollback(err)
+        }
+        Product.Properties["newId"] = strconv.FormatInt(productId, 10)
+        productChan <- Product
     }
-    Product.Properties["newId"] = strconv.FormatInt(productId, 10)
-    productChan <- Product
 }
 
 func productParamsImport (productChan <- chan Product) {
