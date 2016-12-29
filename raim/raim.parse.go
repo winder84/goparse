@@ -43,7 +43,7 @@ var approvedParamsList []string
 var scriptCount = 1
 //var productSlice []Product
 func main() {
-    db, err = sql.Open("mysql", "root:07090530@/raiment-shop.ru")
+    db, err = sql.Open("mysql", "root:121212@/raiment-shop.ru")
     defer db.Close()
     tmpFileName := "tmpFile.xml"
     timeBefore = time.Now();
