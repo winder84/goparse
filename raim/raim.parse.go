@@ -45,7 +45,7 @@ var scriptCount = 1
 func main() {
     db, err = sql.Open("mysql", "root:121212@/raiment-shop.ru")
     defer db.Close()
-    tmpFileName := "tmpFile.xml"
+    tmpFileName := "/tmp/tmpFile.xml"
     timeBefore = time.Now();
     timeLine("Импорт магазинов начат")
     approvedParamsList = []string{
