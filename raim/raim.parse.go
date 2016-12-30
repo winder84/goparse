@@ -279,7 +279,6 @@ func checkAndSaveProduct(Product Product, productChan chan<- Product) {
     }
     //---------------------------------------- Product
     var categoryId int64
-    var categoryIdToWrite string
     oldCategories, err := db.Query("SELECT id FROM ExternalCategory WHERE externalId=? AND siteId=?", Product.Properties["categoryId"], siteId)
     checkErrorAndRollback(err)
     for oldCategories.Next() {
@@ -307,7 +306,7 @@ func checkAndSaveProduct(Product Product, productChan chan<- Product) {
                 Product.Properties["url"],
                 time.Now().Format(createdFormat),
                 Product.Properties["vendorCode"],
-                categoryIdToWrite,
+                categoryId,
                 productId)
             checkErrorAndRollback(err)
             newProductResults.LastInsertId()
@@ -333,7 +332,7 @@ func checkAndSaveProduct(Product Product, productChan chan<- Product) {
                 time.Now().Format(createdFormat),
                 strconv.FormatInt(vendorId, 10),
                 Product.Properties["vendorCode"],
-                categoryIdToWrite)
+                categoryId)
             checkErrorAndRollback(err)
             productId, err = newProductResults.LastInsertId()
             checkErrorAndRollback(err)
