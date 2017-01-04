@@ -40,7 +40,8 @@ var newProductParamValueCount int
 var ProductsCount int
 const createdFormat = "2006-01-02 15:04:05"
 var approvedParamsList []string
-var scriptCount = 1
+var productScriptCount = 1
+var valuesScriptCount = 1
 //var productSlice []Product
 func main() {
     db, err = sql.Open("mysql", "root:121212@/raiment-shop.ru")
@@ -84,8 +85,10 @@ func main() {
         fmt.Println(err)
         os.Exit(1)
     }
-    productChan := make(chan Product, 30000)
-    go productParamsImport(productChan)
+    productChan := make(chan Product, 20000)
+    productValuesChan := make(chan Product, 20000)
+    go checkAndSaveProduct(productChan, productValuesChan)
+    go productParamsImport(productChan, productValuesChan)
     for sites.Next() {
         newProductParamCount = 0
         newProductParamValueCount = 0
@@ -98,6 +101,7 @@ func main() {
             os.Exit(1)
         }
 
+        timeLine("Импорт магазина " + siteTitle + " начат")
         timeLine("Скачивание xml начато")
         newFile, err := os.Create(tmpFileName)
         if err != nil {
@@ -122,9 +126,8 @@ func main() {
             os.Exit(1)
         }
 
-        timeLine("Импорт магазина " + siteTitle + " начат")
         newVendorsCount = 0
-        ProductsCount, CategoriesCount, err := ImportSite(file, productChan)
+        ProductsCount, CategoriesCount, err := ImportSite(file, productChan, productValuesChan)
         timeLine("Импорт магазина " + siteTitle + " завершен")
         timeLine("Обработано товаров: " + strconv.Itoa(ProductsCount))
         timeLine("Обработано категорий: " + strconv.Itoa(CategoriesCount))
@@ -144,7 +147,7 @@ func main() {
 }
 
 
-func ImportSite(reader io.Reader, productChan chan Product) (int, int, error) {
+func ImportSite(reader io.Reader, productChan chan<- Product, productValuesChan chan Product) (int, int, error) {
     d := xml.NewDecoder(reader)
     ProductsCount = 1;
     var (
@@ -165,7 +168,7 @@ func ImportSite(reader io.Reader, productChan chan Product) (int, int, error) {
     for {
         t, tokenErr := d.Token()
         if tokenErr != nil {
-            if len(productChan) == 0 {
+            if len(productChan) == 0 && len(productValuesChan) == 0 {
                 break
             }
         }
@@ -228,7 +231,7 @@ func ImportSite(reader io.Reader, productChan chan Product) (int, int, error) {
                 }
                 ProductsCount++
                 product := Product{Params, Attributes, Properties}
-                checkAndSaveProduct(product, productChan)
+                productChan <- product
                 Products = Products[:0]
                 Params = make(map[string]string)
                 Attributes = make(map[string]string)
@@ -247,104 +250,110 @@ func ImportSite(reader io.Reader, productChan chan Product) (int, int, error) {
     return ProductsCount, CategoriesCount, nil
 }
 
-func checkAndSaveProduct(Product Product, productChan chan<- Product) {
-    var vendorId int64
-    var productId int64
-    oldProducts, err := db.Query("SELECT id FROM Product WHERE externalId=? AND siteId=?", Product.Attributes["id"], siteId)
-    checkErrorAndRollback(err)
-    for oldProducts.Next() {
-        err = oldProducts.Scan(&productId)
+func checkAndSaveProduct(productChan <- chan Product, productValuesChan chan<- Product) {
+    for Product := range productChan {
+        var vendorId int64
+        var productId int64
+        oldProducts, err := db.Query("SELECT id FROM Product WHERE externalId=? AND siteId=?", Product.Attributes["id"], siteId)
         checkErrorAndRollback(err)
-    }
-    oldProducts.Close()
-    //-------------------------------------- Vendor
-    oldVendors, err := db.Query("SELECT id FROM Vendor WHERE name=?", Product.Properties["vendor"])
-    checkErrorAndRollback(err)
-    for oldVendors.Next() {
-        err = oldVendors.Scan(&vendorId)
-        checkErrorAndRollback(err)
-    }
-    oldVendors.Close()
-    if vendorId > 0 {
-        updateVendorResults, err := db.Exec("UPDATE Vendor SET version=? WHERE id=?", siteVersion, vendorId)
-        checkErrorAndRollback(err)
-        updateVendorResults.LastInsertId()
-    } else {
-        newVendorResults, err := db.Exec("INSERT INTO Vendor (name, version, siteId) VALUES(?, ?, ?)",
-            Product.Properties["vendor"], strconv.FormatFloat(siteVersion, 'f', -1, 64), siteId)
-        checkErrorAndRollback(err)
-        vendorId, err = newVendorResults.LastInsertId()
-        checkErrorAndRollback(err)
-        newVendorsCount++
-    }
-    //---------------------------------------- Product
-    var categoryId int64
-    oldCategories, err := db.Query("SELECT id FROM ExternalCategory WHERE externalId=? AND siteId=?", Product.Properties["categoryId"], siteId)
-    checkErrorAndRollback(err)
-    for oldCategories.Next() {
-        err = oldCategories.Scan(&categoryId)
-        checkErrorAndRollback(err)
-    }
-    if categoryId > 0 {
-        if productId > 0 {
-            if Product.Properties["oldprice"] == "" {
-                Product.Properties["oldprice"] = "0"
-            }
-            newProductResults, err := db.Exec("UPDATE Product SET " +
-                    "version=?, currencyId=?, description=?, model=?, name=?, price=?, oldPrice=?, " +
-                    "typePrefix=?, pictures=?, url=?, updated=?, vendorCode=?, categoryId=? " +
-                    "WHERE id=?",
-                strconv.FormatFloat(siteVersion, 'f', -1, 64),
-                Product.Properties["currencyId"],
-                Product.Properties["description"],
-                Product.Properties["model"],
-                Product.Properties["name"],
-                Product.Properties["price"],
-                Product.Properties["oldprice"],
-                Product.Properties["typePrefix"],
-                Product.Properties["picture"],
-                Product.Properties["url"],
-                time.Now().Format(createdFormat),
-                Product.Properties["vendorCode"],
-                categoryId,
-                productId)
-            checkErrorAndRollback(err)
-            newProductResults.LastInsertId()
-        } else {
-            if Product.Properties["oldprice"] == "" {
-                Product.Properties["oldprice"] = "0"
-            }
-            newProductResults, err := db.Exec("INSERT INTO Product (externalId, siteId, version, currencyId, description, model," +
-                    " name, price, oldPrice, typePrefix, pictures, url, updated, vendorId, vendorCode, categoryId) " +
-                    "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                Product.Attributes["id"],
-                siteId,
-                strconv.FormatFloat(siteVersion, 'f', -1, 64),
-                Product.Properties["currencyId"],
-                Product.Properties["description"],
-                Product.Properties["model"],
-                Product.Properties["name"],
-                Product.Properties["price"],
-                Product.Properties["oldprice"],
-                Product.Properties["typePrefix"],
-                Product.Properties["picture"],
-                Product.Properties["url"],
-                time.Now().Format(createdFormat),
-                strconv.FormatInt(vendorId, 10),
-                Product.Properties["vendorCode"],
-                categoryId)
-            checkErrorAndRollback(err)
-            productId, err = newProductResults.LastInsertId()
+        for oldProducts.Next() {
+            err = oldProducts.Scan(&productId)
             checkErrorAndRollback(err)
         }
-        Product.Properties["newId"] = strconv.FormatInt(productId, 10)
-        productChan <- Product
+        oldProducts.Close()
+        //-------------------------------------- Vendor
+        oldVendors, err := db.Query("SELECT id FROM Vendor WHERE name=?", Product.Properties["vendor"])
+        checkErrorAndRollback(err)
+        for oldVendors.Next() {
+            err = oldVendors.Scan(&vendorId)
+            checkErrorAndRollback(err)
+        }
+        oldVendors.Close()
+        if vendorId > 0 {
+            updateVendorResults, err := db.Exec("UPDATE Vendor SET version=? WHERE id=?", siteVersion, vendorId)
+            checkErrorAndRollback(err)
+            updateVendorResults.LastInsertId()
+        } else {
+            newVendorResults, err := db.Exec("INSERT INTO Vendor (name, version, siteId) VALUES(?, ?, ?)",
+                Product.Properties["vendor"], strconv.FormatFloat(siteVersion, 'f', -1, 64), siteId)
+            checkErrorAndRollback(err)
+            vendorId, err = newVendorResults.LastInsertId()
+            checkErrorAndRollback(err)
+            newVendorsCount++
+        }
+        //---------------------------------------- Product
+        var categoryId int64
+        oldCategories, err := db.Query("SELECT id FROM ExternalCategory WHERE externalId=? AND siteId=?", Product.Properties["categoryId"], siteId)
+        checkErrorAndRollback(err)
+        for oldCategories.Next() {
+            err = oldCategories.Scan(&categoryId)
+            checkErrorAndRollback(err)
+        }
+        if categoryId > 0 {
+            if productId > 0 {
+                if Product.Properties["oldprice"] == "" {
+                    Product.Properties["oldprice"] = "0"
+                }
+                newProductResults, err := db.Exec("UPDATE Product SET " +
+                        "version=?, currencyId=?, description=?, model=?, name=?, price=?, oldPrice=?, " +
+                        "typePrefix=?, pictures=?, url=?, updated=?, vendorCode=?, categoryId=? " +
+                        "WHERE id=?",
+                    strconv.FormatFloat(siteVersion, 'f', -1, 64),
+                    Product.Properties["currencyId"],
+                    Product.Properties["description"],
+                    Product.Properties["model"],
+                    Product.Properties["name"],
+                    Product.Properties["price"],
+                    Product.Properties["oldprice"],
+                    Product.Properties["typePrefix"],
+                    Product.Properties["picture"],
+                    Product.Properties["url"],
+                    time.Now().Format(createdFormat),
+                    Product.Properties["vendorCode"],
+                    categoryId,
+                    productId)
+                checkErrorAndRollback(err)
+                newProductResults.LastInsertId()
+            } else {
+                if Product.Properties["oldprice"] == "" {
+                    Product.Properties["oldprice"] = "0"
+                }
+                newProductResults, err := db.Exec("INSERT INTO Product (externalId, siteId, version, currencyId, description, model," +
+                        " name, price, oldPrice, typePrefix, pictures, url, updated, vendorId, vendorCode, categoryId) " +
+                        "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    Product.Attributes["id"],
+                    siteId,
+                    strconv.FormatFloat(siteVersion, 'f', -1, 64),
+                    Product.Properties["currencyId"],
+                    Product.Properties["description"],
+                    Product.Properties["model"],
+                    Product.Properties["name"],
+                    Product.Properties["price"],
+                    Product.Properties["oldprice"],
+                    Product.Properties["typePrefix"],
+                    Product.Properties["picture"],
+                    Product.Properties["url"],
+                    time.Now().Format(createdFormat),
+                    strconv.FormatInt(vendorId, 10),
+                    Product.Properties["vendorCode"],
+                    categoryId)
+                checkErrorAndRollback(err)
+                productId, err = newProductResults.LastInsertId()
+                checkErrorAndRollback(err)
+            }
+            Product.Properties["newId"] = strconv.FormatInt(productId, 10)
+            productValuesChan <- Product
+        }
+        if (len(productChan) / 5000) + 3 >= productScriptCount {
+            productScriptCount++
+            go checkAndSaveProduct(productChan, productValuesChan)
+        }
     }
 }
 
-func productParamsImport (productChan <- chan Product) {
+func productParamsImport (productChan chan Product, productValuesChan <- chan Product) {
     //------------------------------------------------ ProductParams
-    for Product := range productChan {
+    for Product := range productValuesChan {
         for productParamKey, productParamValue := range Product.Params {
             if productParamKey == "Страна производства" {
                 var firstIndex = strings.Index(productParamValue, "<")
@@ -424,17 +433,21 @@ func productParamsImport (productChan <- chan Product) {
                     newProductParamValueLinkResults.LastInsertId()
                 }
             }
-        }
-        if len(productChan) > 0 {
-            if (len(productChan) / 5000) + 3 >= scriptCount {
-                scriptCount++
-                go productParamsImport(productChan)
+            if len(productValuesChan) > 0 {
+                if (len(productValuesChan) / 5000) + 5 >= valuesScriptCount {
+                    valuesScriptCount++
+                    go productParamsImport(productChan, productValuesChan)
+                }
+                fmt.Printf("\r%s", "--- Продуктов в буфере: " + strconv.Itoa(len(productChan)) +
+                        " | Процессов: " + strconv.Itoa(productScriptCount) +
+                        " --- Значений в буфере: " + strconv.Itoa(len(productValuesChan)) +
+                        " | Процессов: " + strconv.Itoa(valuesScriptCount) +
+                        "| Товаров обработано: " + strconv.Itoa(ProductsCount) + " ---")
             }
-            fmt.Printf("\r%s", "--- Значений в буфере: " + strconv.Itoa(len(productChan)) +
-                    " | Процессов: " + strconv.Itoa(scriptCount) + " | Товаров обработано: " + strconv.Itoa(ProductsCount) + " ---")
         }
     }
 }
+
 func checkAndSaveCategories(Category Category)  {
     var categoryId int64
     oldCategories, err := db.Query("SELECT id FROM ExternalCategory WHERE externalId=? AND siteId=?", Category.ExternalId, siteId)
