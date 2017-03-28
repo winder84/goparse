@@ -296,7 +296,7 @@ func checkAndSaveProduct(productChan <- chan Product, productValuesChan chan<- P
                 }
                 newProductResults, err := db.Exec("UPDATE Product SET " +
                         "version=?, currencyId=?, description=?, model=?, name=?, price=?, oldPrice=?, " +
-                        "typePrefix=?, pictures=?, url=?, updated=?, vendorCode=?, categoryId=? " +
+                        "typePrefix=?, pictures=?, url=?, updated=?, vendorCode=?, categoryId=?, isDelete=0 " +
                         "WHERE id=?",
                     strconv.FormatFloat(siteVersion, 'f', -1, 64),
                     Product.Properties["currencyId"],
